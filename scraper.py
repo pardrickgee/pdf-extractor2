@@ -699,6 +699,28 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if stage:
             project['stage'] = stage
         
+        # Extract last updated date (Seneste opdateringsdato)
+        # Look for dates that are NOT in the "Byggestart" context
+        # Updated dates are typically more recent and have specific format
+        update_date = None
+        for cell in cells:
+            # Skip cells that look like start dates
+            if 'byggestart' not in cell.lower():
+                # Try to find a date
+                date_match = re.search(
+                    r'\d{1,2}\s+(?:jan|feb|mar|apr|maj|jun|jul|aug|sep|okt|nov|dec)[a-z]*\.?\s+\d{4}',
+                    cell,
+                    re.IGNORECASE
+                )
+                if date_match:
+                    potential_date = clean_text(date_match.group(0))
+                    # Update dates are typically later than start dates
+                    # and appear after start date in the row
+                    update_date = potential_date
+        
+        if update_date:
+            project['last_updated'] = update_date
+        
         # Extract roles (like Hovedentreprenør, Totalentreprenør)
         roles = extract_roles(all_text)
         if roles:
