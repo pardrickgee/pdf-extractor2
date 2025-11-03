@@ -471,21 +471,46 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
         if 'name' not in contact:
             continue
         
-        # Extract phone - check phone columns and all columns
+        # Extract phone - check phone columns and all columns, collect ALL phones
+        all_phones = []
         for col_idx in phone_cols + list(range(len(row))):
             if col_idx < len(row) and pd.notna(row.iloc[col_idx]):
                 phones = extract_phones(str(row.iloc[col_idx]))
                 if phones:
-                    contact['phone'] = phones[0]
-                    break
+                    all_phones.extend(phones)
         
-        # Extract email - check email columns and all columns
+        # Remove duplicates while preserving order
+        if all_phones:
+            seen = set()
+            unique_phones = []
+            for phone in all_phones:
+                if phone not in seen:
+                    seen.add(phone)
+                    unique_phones.append(phone)
+            
+            # Store all phones
+            if len(unique_phones) == 1:
+                contact['phone'] = unique_phones[0]
+            else:
+                contact['phones'] = unique_phones
+                contact['phone'] = unique_phones[0]  # First phone for compatibility
+        
+        # Extract email - check email columns and all columns, collect ALL emails
+        all_emails = []
         for col_idx in email_cols + list(range(len(row))):
             if col_idx < len(row) and pd.notna(row.iloc[col_idx]):
                 emails = extract_emails(str(row.iloc[col_idx]))
                 if emails:
-                    contact['email'] = emails[0]
-                    break
+                    all_emails.extend(emails)
+        
+        # Remove duplicates
+        if all_emails:
+            unique_emails = list(dict.fromkeys(all_emails))
+            if len(unique_emails) == 1:
+                contact['email'] = unique_emails[0]
+            else:
+                contact['emails'] = unique_emails
+                contact['email'] = unique_emails[0]  # First email for compatibility
         
         # Extract roles - check role columns and all columns
         all_roles = []
