@@ -270,9 +270,87 @@ def find_column_indices(df: pd.DataFrame, keywords: List[str]) -> List[int]:
     
     return indices
 
+def merge_multirow_entries(df: pd.DataFrame, boundary_cols: List[int]) -> pd.DataFrame:
+    """
+    UNIVERSAL: Merge multi-row entries (contacts, projects, etc.) into single rows.
+    
+    Many PDFs split entries across multiple rows. This function detects and merges them.
+    
+    Args:
+        df: DataFrame to process
+        boundary_cols: Columns to check for entry boundaries (ID, name, etc.)
+    
+    Strategy:
+    1. If ID column exists: Use numbers as entry boundaries (most reliable)
+    2. Otherwise: Use presence of text in boundary columns
+    """
+    if df.empty or not boundary_cols:
+        return df
+    
+    # Detect ID column (universal pattern)
+    id_col = detect_id_column(df)
+    primary_col = boundary_cols[0]
+    
+    merged_rows = []
+    current_entry = None
+    
+    for idx in range(len(df)):
+        row = df.iloc[idx]
+        
+        # Check if this row starts a new entry
+        is_new_entry = False
+        
+        if id_col is not None:
+            # UNIVERSAL: Use ID column as delimiter (most reliable)
+            cell_val = str(row.iloc[id_col]).strip()
+            if cell_val.isdigit():
+                is_new_entry = True
+        else:
+            # Fallback: Use primary column presence
+            cell = str(row.iloc[primary_col]) if primary_col < len(row) else ""
+            is_new_entry = cell.strip() and cell not in ['', 'nan', 'None']
+        
+        if is_new_entry:
+            # Save previous entry
+            if current_entry is not None:
+                merged_rows.append(current_entry)
+            # Start new entry
+            current_entry = row.copy()
+        else:
+            # Continuation of previous entry - merge cells
+            if current_entry is not None:
+                for col_idx in range(len(row)):
+                    cell_value = str(row.iloc[col_idx]).strip()
+                    if cell_value and cell_value not in ['', 'nan', 'None']:
+                        # Append to current entry's cell with newline separator
+                        existing = str(current_entry.iloc[col_idx]).strip()
+                        if not existing or existing in ['', 'nan', 'None']:
+                            current_entry.iloc[col_idx] = cell_value
+                        else:
+                            current_entry.iloc[col_idx] = existing + '\n' + cell_value
+    
+    # Don't forget last entry
+    if current_entry is not None:
+        merged_rows.append(current_entry)
+    
+    if merged_rows:
+        merged_df = pd.DataFrame(merged_rows)
+        id_detected = id_col is not None
+        logger.info(f"Merged {len(df)} rows into {len(merged_df)} entries (ID column: {id_detected})")
+        return merged_df
+    
+    return df
+
+def merge_multirow_contacts(df: pd.DataFrame, name_cols: List[int]) -> pd.DataFrame:
+    """
+    UNIVERSAL: Merge multi-row contact entries.
+    Wrapper around merge_multirow_entries for backward compatibility.
+    """
+    return merge_multirow_entries(df, name_cols)
+
 def detect_id_column(df: pd.DataFrame) -> Optional[int]:
     """
-    UNIVERSAL: Detect if table has a number/ID column (common pattern in PDFs).
+    Detect if table has a number/ID column (common pattern in PDFs).
     
     Returns column index if found, None otherwise.
     """
@@ -293,75 +371,6 @@ def detect_id_column(df: pd.DataFrame) -> Optional[int]:
                 return col_idx
     
     return None
-
-def merge_multirow_contacts(df: pd.DataFrame, name_cols: List[int]) -> pd.DataFrame:
-    """
-    UNIVERSAL: Merge multi-row contact entries into single rows.
-    
-    Many PDFs split contact data across multiple rows when there are
-    multiple phones/emails/roles. This function detects and merges them.
-    
-    Strategy:
-    1. If ID column exists: Use numbers as contact boundaries (most reliable)
-    2. Otherwise: Use name column presence as boundary
-    """
-    if df.empty or not name_cols:
-        return df
-    
-    # Detect ID column (universal pattern)
-    id_col = detect_id_column(df)
-    name_col = name_cols[0]
-    
-    merged_rows = []
-    current_contact = None
-    current_id = None
-    
-    for idx in range(len(df)):
-        row = df.iloc[idx]
-        
-        # Check if this row starts a new contact
-        is_new_contact = False
-        
-        if id_col is not None:
-            # UNIVERSAL: Use ID column as delimiter (most reliable)
-            cell_val = str(row.iloc[id_col]).strip()
-            if cell_val.isdigit():
-                is_new_contact = True
-                current_id = cell_val
-        else:
-            # Fallback: Use name presence
-            name_cell = str(row.iloc[name_col]) if name_col < len(row) else ""
-            is_new_contact = name_cell.strip() and name_cell not in ['', 'nan', 'None']
-        
-        if is_new_contact:
-            # Save previous contact
-            if current_contact is not None:
-                merged_rows.append(current_contact)
-            # Start new contact
-            current_contact = row.copy()
-        else:
-            # Continuation of previous contact - merge cells
-            if current_contact is not None:
-                for col_idx in range(len(row)):
-                    cell_value = str(row.iloc[col_idx]).strip()
-                    if cell_value and cell_value not in ['', 'nan', 'None']:
-                        # Append to current contact's cell with newline separator
-                        existing = str(current_contact.iloc[col_idx]).strip()
-                        if not existing or existing in ['', 'nan', 'None']:
-                            current_contact.iloc[col_idx] = cell_value
-                        else:
-                            current_contact.iloc[col_idx] = existing + '\n' + cell_value
-    
-    # Don't forget last contact
-    if current_contact is not None:
-        merged_rows.append(current_contact)
-    
-    if merged_rows:
-        merged_df = pd.DataFrame(merged_rows)
-        logger.info(f"Merged {len(df)} rows into {len(merged_df)} contacts (ID column: {id_col is not None})")
-        return merged_df
-    
-    return df
 
 def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
     """Extract contacts with names, phones, emails, and roles"""
@@ -582,11 +591,31 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if any(kw in row_text for kw in ['projekt', 'budget', 'region', 'rolle']):
             start_row = i + 1
     
-    # Process each row
-    for idx in range(start_row, len(df)):
-        row = df.iloc[idx]
+    # Extract data portion (skip headers)
+    df_data = df.iloc[start_row:].copy() if start_row < len(df) else df.copy()
+    df_data = df_data.reset_index(drop=True)
+    
+    # UNIVERSAL FIX: Merge multi-row projects before processing
+    # Use first column as boundary (usually project name or ID)
+    df_data = merge_multirow_entries(df_data, [0])
+    
+    # Detect ID column for extraction
+    id_col = detect_id_column(df_data)
+    
+    # Process each merged row
+    # Process each merged row
+    for idx in range(len(df_data)):
+        row = df_data.iloc[idx]
         
         project = {}
+        
+        # Extract ID/number if column exists
+        if id_col is not None and id_col < len(row):
+            project_id = str(row.iloc[id_col]).strip()
+            # Clean up any newlines from merging
+            project_id = project_id.split('\n')[0].strip()
+            if project_id.isdigit():
+                project['id'] = project_id
         
         # Collect all non-empty cells
         cells = [clean_multiline(str(cell)) for cell in row if pd.notna(cell) and str(cell).strip()]
@@ -614,6 +643,10 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         
         if not project_name:
             continue
+        
+        # Clean project name - replace newlines with spaces (from multi-row merging)
+        project_name = re.sub(r'\s*\n\s*', ' ', project_name)
+        project_name = re.sub(r'\s+', ' ', project_name).strip()
         
         project['name'] = project_name
         
