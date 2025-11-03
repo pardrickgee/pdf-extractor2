@@ -270,6 +270,30 @@ def find_column_indices(df: pd.DataFrame, keywords: List[str]) -> List[int]:
     
     return indices
 
+def detect_id_column(df: pd.DataFrame) -> Optional[int]:
+    """
+    UNIVERSAL: Detect if table has a number/ID column (common pattern in PDFs).
+    
+    Returns column index if found, None otherwise.
+    """
+    for col_idx in range(min(3, len(df.columns))):  # Check first 3 columns
+        # Check first 10 rows for numeric sequence pattern
+        numbers = []
+        for i in range(min(10, len(df))):
+            cell = str(df.iloc[i, col_idx]).strip()
+            if cell.isdigit() and len(cell) <= 3:  # IDs typically 1-3 digits
+                numbers.append(int(cell))
+        
+        # If we found 3+ sequential-ish numbers, likely an ID column
+        if len(numbers) >= 3:
+            # Check if mostly sequential (allows some gaps)
+            sorted_nums = sorted(numbers)
+            if sorted_nums[-1] - sorted_nums[0] <= len(numbers) * 2:
+                logger.info(f"Detected ID column at index {col_idx}")
+                return col_idx
+    
+    return None
+
 def merge_multirow_contacts(df: pd.DataFrame, name_cols: List[int]) -> pd.DataFrame:
     """
     UNIVERSAL: Merge multi-row contact entries into single rows.
@@ -277,24 +301,43 @@ def merge_multirow_contacts(df: pd.DataFrame, name_cols: List[int]) -> pd.DataFr
     Many PDFs split contact data across multiple rows when there are
     multiple phones/emails/roles. This function detects and merges them.
     
-    Pattern: When name column is empty, merge with previous contact.
+    Strategy:
+    1. If ID column exists: Use numbers as contact boundaries (most reliable)
+    2. Otherwise: Use name column presence as boundary
     """
     if df.empty or not name_cols:
         return df
     
+    # Detect ID column (universal pattern)
+    id_col = detect_id_column(df)
+    name_col = name_cols[0]
+    
     merged_rows = []
     current_contact = None
-    name_col = name_cols[0]
+    current_id = None
     
     for idx in range(len(df)):
         row = df.iloc[idx]
-        name_cell = str(row.iloc[name_col]) if name_col < len(row) else ""
-        has_name = name_cell.strip() and name_cell not in ['', 'nan', 'None']
         
-        if has_name:
-            # Start new contact
+        # Check if this row starts a new contact
+        is_new_contact = False
+        
+        if id_col is not None:
+            # UNIVERSAL: Use ID column as delimiter (most reliable)
+            cell_val = str(row.iloc[id_col]).strip()
+            if cell_val.isdigit():
+                is_new_contact = True
+                current_id = cell_val
+        else:
+            # Fallback: Use name presence
+            name_cell = str(row.iloc[name_col]) if name_col < len(row) else ""
+            is_new_contact = name_cell.strip() and name_cell not in ['', 'nan', 'None']
+        
+        if is_new_contact:
+            # Save previous contact
             if current_contact is not None:
                 merged_rows.append(current_contact)
+            # Start new contact
             current_contact = row.copy()
         else:
             # Continuation of previous contact - merge cells
@@ -315,7 +358,7 @@ def merge_multirow_contacts(df: pd.DataFrame, name_cols: List[int]) -> pd.DataFr
     
     if merged_rows:
         merged_df = pd.DataFrame(merged_rows)
-        logger.info(f"Merged {len(df)} rows into {len(merged_df)} contacts")
+        logger.info(f"Merged {len(df)} rows into {len(merged_df)} contacts (ID column: {id_col is not None})")
         return merged_df
     
     return df
@@ -359,6 +402,9 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
     # UNIVERSAL FIX: Merge multi-row contacts before processing
     df = merge_multirow_contacts(df, name_cols)
     
+    # Detect ID column for extraction
+    id_col = detect_id_column(df)
+    
     # Skip header rows
     start_row = 0
     for i in range(min(10, len(df))):
@@ -371,6 +417,12 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
         row = df.iloc[idx]
         
         contact = {}
+        
+        # Extract ID/number if column exists
+        if id_col is not None and id_col < len(row):
+            contact_id = str(row.iloc[id_col]).strip()
+            if contact_id.isdigit():
+                contact['id'] = contact_id
         
         # Extract name
         for name_col in name_cols:
