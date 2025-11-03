@@ -270,6 +270,56 @@ def find_column_indices(df: pd.DataFrame, keywords: List[str]) -> List[int]:
     
     return indices
 
+def merge_multirow_contacts(df: pd.DataFrame, name_cols: List[int]) -> pd.DataFrame:
+    """
+    UNIVERSAL: Merge multi-row contact entries into single rows.
+    
+    Many PDFs split contact data across multiple rows when there are
+    multiple phones/emails/roles. This function detects and merges them.
+    
+    Pattern: When name column is empty, merge with previous contact.
+    """
+    if df.empty or not name_cols:
+        return df
+    
+    merged_rows = []
+    current_contact = None
+    name_col = name_cols[0]
+    
+    for idx in range(len(df)):
+        row = df.iloc[idx]
+        name_cell = str(row.iloc[name_col]) if name_col < len(row) else ""
+        has_name = name_cell.strip() and name_cell not in ['', 'nan', 'None']
+        
+        if has_name:
+            # Start new contact
+            if current_contact is not None:
+                merged_rows.append(current_contact)
+            current_contact = row.copy()
+        else:
+            # Continuation of previous contact - merge cells
+            if current_contact is not None:
+                for col_idx in range(len(row)):
+                    cell_value = str(row.iloc[col_idx]).strip()
+                    if cell_value and cell_value not in ['', 'nan', 'None']:
+                        # Append to current contact's cell with newline separator
+                        existing = str(current_contact.iloc[col_idx]).strip()
+                        if not existing or existing in ['', 'nan', 'None']:
+                            current_contact.iloc[col_idx] = cell_value
+                        else:
+                            current_contact.iloc[col_idx] = existing + '\n' + cell_value
+    
+    # Don't forget last contact
+    if current_contact is not None:
+        merged_rows.append(current_contact)
+    
+    if merged_rows:
+        merged_df = pd.DataFrame(merged_rows)
+        logger.info(f"Merged {len(df)} rows into {len(merged_df)} contacts")
+        return merged_df
+    
+    return df
+
 def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
     """Extract contacts with names, phones, emails, and roles"""
     
@@ -305,6 +355,9 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
         return []
     
     logger.info(f"Column indices - names: {name_cols}, phones: {phone_cols}, emails: {email_cols}, roles: {role_cols}")
+    
+    # UNIVERSAL FIX: Merge multi-row contacts before processing
+    df = merge_multirow_contacts(df, name_cols)
     
     # Skip header rows
     start_row = 0
@@ -358,8 +411,9 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
         if all_roles:
             contact['roles'] = list(dict.fromkeys(all_roles))[:3]  # Max 3 roles
         
-        # Must have at least phone or email
-        if 'phone' in contact or 'email' in contact:
+        # UNIVERSAL: Include contact if has name + (phone OR email OR role)
+        # Many PDFs have contacts with roles but no direct phone/email
+        if 'phone' in contact or 'email' in contact or 'roles' in contact:
             contacts.append(contact)
     
     # Deduplicate
@@ -643,17 +697,47 @@ def parse_pdf(pdf_path: str) -> Dict:
     except Exception as e:
         logger.warning(f"Camelot lattice failed: {e}")
     
-    # Method 2: Stream (borderless tables)
+    # Method 2: Stream (borderless tables) - try multiple configurations
     try:
         logger.info("Extracting tables with Camelot stream...")
-        tables = camelot.read_pdf(
-            pdf_path,
-            pages='all',
-            flavor='stream',
-            edge_tol=100,
-            row_tol=15,
-            column_tol=10
-        )
+        
+        # Try multiple parameter combinations to handle various table structures
+        stream_configs = [
+            {},                                                     # Default - often best
+            {'edge_tol': 50, 'row_tol': 10, 'column_tol': 5},   # Tighter - better columns
+            {'edge_tol': 100, 'row_tol': 15, 'column_tol': 10}, # Moderate
+            {'edge_tol': 200, 'row_tol': 20, 'column_tol': 15}, # Looser
+        ]
+        
+        best_tables = []
+        best_score = 0
+        
+        for config in stream_configs:
+            try:
+                tables = camelot.read_pdf(
+                    pdf_path,
+                    pages='all',
+                    flavor='stream',
+                    **config
+                )
+                
+                # Score based on: number of tables + average columns + accuracy
+                score = len(tables)
+                if tables:
+                    avg_cols = sum(t.df.shape[1] for t in tables) / len(tables)
+                    avg_acc = sum(t.parsing_report.get('accuracy', 0) for t in tables) / len(tables)
+                    score = score * avg_cols * (avg_acc / 100)
+                
+                if score > best_score:
+                    best_score = score
+                    best_tables = tables
+                    logger.info(f"Better extraction with {config}: {len(tables)} tables, score={score:.1f}")
+                    
+            except Exception as e:
+                logger.debug(f"Stream config {config} failed: {e}")
+                continue
+        
+        tables = best_tables
         for table in tables:
             if not table.df.empty and table.df.shape[0] > 2:
                 # Check for duplicates
