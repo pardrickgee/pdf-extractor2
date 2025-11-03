@@ -31,6 +31,33 @@ logger = logging.getLogger(__name__)
 # Utilities
 # ============================================================================
 
+def fix_camelcase_boundaries(text: str) -> str:
+    """
+    UNIVERSAL: Fix missing spaces in camelCase text.
+    
+    PDFs often use different colors for text segments, which appear adjacent
+    without spaces when extracted. Pattern: "daginstitutionSolsikken"
+    
+    Detects lowercase→uppercase transitions and adds spaces.
+    """
+    if not text or len(text) < 2:
+        return text
+    
+    result = []
+    for i, char in enumerate(text):
+        # Add space before uppercase if:
+        # 1. Previous char is lowercase
+        # 2. Not at start of string
+        # 3. Not preceded by space already
+        if (i > 0 and 
+            char.isupper() and 
+            text[i-1].islower() and
+            (i == 1 or text[i-2] != ' ')):
+            result.append(' ')
+        result.append(char)
+    
+    return ''.join(result)
+
 def clean_text(text: str) -> str:
     """Clean and normalize text"""
     if not text or pd.isna(text):
@@ -647,6 +674,9 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         # Clean project name - replace newlines with spaces (from multi-row merging)
         project_name = re.sub(r'\s*\n\s*', ' ', project_name)
         project_name = re.sub(r'\s+', ' ', project_name).strip()
+        
+        # UNIVERSAL: Fix camelCase boundaries (colored text segments in PDFs)
+        project_name = fix_camelcase_boundaries(project_name)
         
         project['name'] = project_name
         
