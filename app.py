@@ -108,8 +108,8 @@ async def extract_pdf(file: UploadFile = File(...)):
             'success': True
         }
         
-        # Add raw_json field - complete data as JSON string
-        result['raw_json'] = json.dumps(result, ensure_ascii=False, indent=2)
+        # Add raw_json field - complete data as JSON string (no formatting for parsing)
+        result['raw_json'] = json.dumps(result, ensure_ascii=False)
         
         logger.info(
             f"Extracted: {result['summary']['contacts']} contacts, "
@@ -169,8 +169,8 @@ async def extract_batch(files: list[UploadFile] = File(...)):
                 'success': True
             }
             
-            # Add raw_json field for this file
-            result['raw_json'] = json.dumps(result, ensure_ascii=False, indent=2)
+            # Add raw_json field for this file (no formatting for parsing)
+            result['raw_json'] = json.dumps(result, ensure_ascii=False)
             
             results.append(result)
             
@@ -201,8 +201,8 @@ async def extract_batch(files: list[UploadFile] = File(...)):
         }
     }
     
-    # Add raw_json for the entire batch response
-    batch_response['raw_json'] = json.dumps(batch_response, ensure_ascii=False, indent=2)
+    # Add raw_json for the entire batch response (no formatting for parsing)
+    batch_response['raw_json'] = json.dumps(batch_response, ensure_ascii=False)
     
     return JSONResponse(content=batch_response)
 
