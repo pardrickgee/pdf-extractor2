@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 import os
 import logging
+import json
 from pathlib import Path
 
 from scraper import parse_pdf
@@ -58,7 +59,8 @@ async def root():
             "Automatic table detection and classification",
             "Intelligent data validation",
             "Confidence scoring",
-            "Multi-method extraction (Camelot + pdfplumber)"
+            "Multi-method extraction (Camelot + pdfplumber)",
+            "Raw JSON output for easy downstream processing"
         ]
     }
 
@@ -78,6 +80,7 @@ async def extract_pdf(file: UploadFile = File(...)):
     - projects: List of projects with budgets, dates, stages
     - tenders: List of tenders/bids
     - quality: Extraction quality metrics
+    - raw_json: Complete data as JSON string (for easy downstream processing)
     """
     
     if not file.filename.endswith('.pdf'):
@@ -104,6 +107,9 @@ async def extract_pdf(file: UploadFile = File(...)):
             'filename': file.filename,
             'success': True
         }
+        
+        # Add raw_json field - complete data as JSON string
+        result['raw_json'] = json.dumps(result, ensure_ascii=False, indent=2)
         
         logger.info(
             f"Extracted: {result['summary']['contacts']} contacts, "
@@ -134,6 +140,7 @@ async def extract_batch(files: list[UploadFile] = File(...)):
     Extract data from multiple PDFs.
     
     Returns results for each file with success/error status.
+    Each result includes raw_json field for easy processing.
     """
     
     results = []
@@ -162,6 +169,9 @@ async def extract_batch(files: list[UploadFile] = File(...)):
                 'success': True
             }
             
+            # Add raw_json field for this file
+            result['raw_json'] = json.dumps(result, ensure_ascii=False, indent=2)
+            
             results.append(result)
             
             # Cleanup
@@ -179,7 +189,7 @@ async def extract_batch(files: list[UploadFile] = File(...)):
     successful = [r for r in results if r.get('metadata', {}).get('success')]
     failed = [r for r in results if not r.get('metadata', {}).get('success')]
     
-    return JSONResponse(content={
+    batch_response = {
         'results': results,
         'summary': {
             'total': len(files),
@@ -189,7 +199,12 @@ async def extract_batch(files: list[UploadFile] = File(...)):
             'total_projects': sum(r.get('summary', {}).get('projects', 0) for r in successful),
             'total_tenders': sum(r.get('summary', {}).get('tenders', 0) for r in successful)
         }
-    })
+    }
+    
+    # Add raw_json for the entire batch response
+    batch_response['raw_json'] = json.dumps(batch_response, ensure_ascii=False, indent=2)
+    
+    return JSONResponse(content=batch_response)
 
 if __name__ == "__main__":
     import uvicorn
