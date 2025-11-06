@@ -153,8 +153,9 @@ def extract_phones(text: str) -> List[str]:
             if len(phone) == 8 and phone.isdigit():
                 # Avoid dates that look like phone numbers
                 if not re.search(r'(19|20)\d{2}', phone):
-                    # Avoid CVR numbers (check context)
-                    if 'cvr' not in text[max(0, match.start()-10):match.end()+10].lower():
+                    # Avoid CVR/Org numbers (check context)
+                    context = text[max(0, match.start()-10):match.end()+10].lower()
+                    if 'cvr' not in context and 'org nr' not in context:
                         phones.append(phone)
     
     return list(dict.fromkeys(phones))  # Remove duplicates, preserve order
@@ -1336,8 +1337,8 @@ def extract_company_info(pdf_path: str) -> Dict[str, str]:
             for line in lines:
                 line = line.strip()
                 
-                # CVR number (must be 8 digits and labeled)
-                if 'cvr' in line.lower():
+                # CVR/Org number (must be 8 digits and labeled)
+                if 'cvr' in line.lower() or 'org nr' in line.lower() or 'org. nr' in line.lower():
                     match = re.search(r'\b(\d{8})\b', line)
                     if match:
                         info['cvr'] = match.group(1)
@@ -1354,11 +1355,11 @@ def extract_company_info(pdf_path: str) -> Dict[str, str]:
                     if match:
                         info['website'] = match.group(1)
                 
-                # Phone (NOT from CVR line, must be labeled)
+                # Phone (NOT from CVR/Org line, must be labeled)
                 if 'phone' not in info:
                     if any(word in line.lower() for word in ['telefon', 'phone', 'tlf', 'mobil']):
-                        # Don't extract from CVR line
-                        if 'cvr' not in line.lower():
+                        # Don't extract from CVR/Org line
+                        if 'cvr' not in line.lower() and 'org nr' not in line.lower():
                             phones = extract_phones(line)
                             if phones:
                                 info['phone'] = phones[0]
