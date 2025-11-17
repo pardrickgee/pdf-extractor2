@@ -1,28 +1,13 @@
 """
 Enhanced Professional PDF Scraper for Byggefakta (New & Old Layouts)
 =====================================================================
-Optimized for BOTH legacy and modern Byggefakta SMART PDFs:
+FIXED VERSION with improved role extraction for English and Danish roles
 
-NEW LAYOUT FEATURES (2025):
-- Numbered ID column (#) for contacts and projects
-- Multiple phone numbers per contact (mobile + office)
-- Sustainability (Bæredygtighed) column in projects
-- "Seneste opdateringsdato" (last update date) column
-- Modernized column headers and formatting
-- Compact single-line contact format
-
-LEGACY SUPPORT:
-- Multi-page PDFs without ID columns
-- Various table structures and layouts
-- Text-based fallback extraction
-
-CAPABILITIES:
-- Multiple extraction methods (Camelot + pdfplumber + text fallback)
-- Multi-line cell handling with intelligent merging
-- Danish pattern recognition  
-- Better column mapping
-- Proper contact/project/tender separation
-- Robust handling of single-page PDFs
+Key improvements:
+- Case-insensitive column detection
+- Better role extraction for both English and Danish
+- Direct text extraction from role columns
+- Multiple role parsing strategies
 """
 
 import re
@@ -49,23 +34,12 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 def fix_camelcase_boundaries(text: str) -> str:
-    """
-    UNIVERSAL: Fix missing spaces in camelCase text.
-    
-    PDFs often use different colors for text segments, which appear adjacent
-    without spaces when extracted. Pattern: "daginstitutionSolsikken"
-    
-    Detects lowercase→uppercase transitions and adds spaces.
-    """
+    """Fix missing spaces in camelCase text"""
     if not text or len(text) < 2:
         return text
     
     result = []
     for i, char in enumerate(text):
-        # Add space before uppercase if:
-        # 1. Previous char is lowercase
-        # 2. Not at start of string
-        # 3. Not preceded by space already
         if (i > 0 and 
             char.isupper() and 
             text[i-1].islower() and
@@ -80,7 +54,6 @@ def clean_text(text: str) -> str:
     if not text or pd.isna(text):
         return ""
     text = str(text).strip()
-    # Replace multiple spaces/newlines with single space
     text = re.sub(r'\s+', ' ', text)
     return text
 
@@ -89,9 +62,7 @@ def clean_multiline(text: str) -> str:
     if not text or pd.isna(text):
         return ""
     text = str(text).strip()
-    # Remove excessive whitespace but keep single spaces
     text = re.sub(r'[ \t]+', ' ', text)
-    # Replace multiple newlines with single newline
     text = re.sub(r'\n\s*\n', '\n', text)
     return text
 
@@ -100,16 +71,12 @@ def clean_multiline(text: str) -> str:
 # ============================================================================
 
 def is_valid_person_name(text: str) -> bool:
-    """
-    Validate person names (2-4 capitalized words, no numbers, no roles)
-    Enhanced for new Byggefakta layout with stricter validation
-    """
+    """Validate person names"""
     if not text or len(text) < 3 or len(text) > 70:
         return False
     
     text = clean_text(text)
     
-    # Filter out common non-names (enhanced list)
     blacklist = [
         'projekt', 'kontakt', 'entr', 'entrepren', 'rådgiver', 'ingeniør',
         'chef', 'direktør', 'a/s', 'aps', 'firma', 'rolle', 'telefon',
@@ -117,33 +84,27 @@ def is_valid_person_name(text: str) -> bool:
         'tømrer', 'snedker', 'murer', 'maler', 'elektriker', 'vvs',
         'tagdækning', 'facade', 'gulv', 'vindue', 'dør', 'stål', 'smede',
         'projektleder', 'byggeleder', 'sagsansvarlig', 'projektchef',
-        'hovedentreprenør', 'totalentreprenør', 'el-entreprenør',
-        'udbud', 'licitation', 'byggestart', 'bæredygtighed', 'stadie'
+        'handled', 'project', 'leader', 'contractor', 'producer'
     ]
     
     text_lower = text.lower()
     if any(word in text_lower for word in blacklist):
         return False
     
-    # Must not be all caps (headers)
     if text.isupper() and len(text) > 8:
         return False
     
-    # Split into words
     words = text.split()
     if len(words) < 2 or len(words) > 4:
         return False
     
-    # Each word should start with capital
     capitalized = [w for w in words if w and len(w) > 0 and w[0].isupper()]
     if len(capitalized) < 2:
         return False
     
-    # No numbers
     if any(char.isdigit() for char in text):
         return False
     
-    # Each word mostly letters
     for word in words:
         if len(word) > 1:
             letters = sum(1 for c in word if c.isalpha())
@@ -153,17 +114,13 @@ def is_valid_person_name(text: str) -> bool:
     return True
 
 def extract_phones(text: str) -> List[str]:
-    """
-    Extract Danish phone numbers (8 digits)
-    Enhanced to handle multiple phones on same line (new Byggefakta format)
-    """
+    """Extract Danish phone numbers"""
     if not text or pd.isna(text):
         return []
     
     text = str(text)
     phones = []
     
-    # Pattern for 8-digit Danish numbers
     patterns = [
         r'(?:\+45\s*)?(\d{2}[\s\-]?\d{2}[\s\-]?\d{2}[\s\-]?\d{2})',
         r'\b(\d{8})\b'
@@ -173,14 +130,12 @@ def extract_phones(text: str) -> List[str]:
         for match in re.finditer(pattern, text):
             phone = re.sub(r'[\s\-]', '', match.group(1))
             if len(phone) == 8 and phone.isdigit():
-                # Avoid dates that look like phone numbers
                 if not re.search(r'(19|20)\d{2}', phone):
-                    # Avoid CVR/Org numbers (check context)
                     context = text[max(0, match.start()-10):match.end()+10].lower()
                     if 'cvr' not in context and 'org nr' not in context:
                         phones.append(phone)
     
-    return list(dict.fromkeys(phones))  # Remove duplicates, preserve order
+    return list(dict.fromkeys(phones))
 
 def extract_emails(text: str) -> List[str]:
     """Extract email addresses"""
@@ -190,10 +145,15 @@ def extract_emails(text: str) -> List[str]:
     pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
     return list(set(pattern.findall(str(text))))
 
-def extract_roles(text: str) -> List[str]:
+def extract_roles_from_text(text: str) -> List[str]:
     """
-    Extract job roles/positions from text
-    Enhanced for new Byggefakta format with more role types
+    IMPROVED: Extract roles from text with support for English and Danish formats
+    
+    Handles formats like:
+    - "Handled. Steel contractor"
+    - "Project leader. Total contractor"
+    - "Projektleder. Totalentreprenør"
+    - Multiple roles separated by newlines or periods
     """
     if not text or pd.isna(text):
         return []
@@ -201,57 +161,79 @@ def extract_roles(text: str) -> List[str]:
     text = clean_multiline(text)
     roles = []
     
-    # Common role patterns (enhanced)
-    role_patterns = [
-        r'Projektleder[^.]*',
-        r'Kontaktperson[^.]*',
-        r'Byggeleder[^.]*',
-        r'Sagsansvarlig[^.]*',
-        r'Projektchef[^.]*',
-        r'Projekteringsleder[^.]*',
-        r'Indkøber[^.]*',
-        r'Ingeniør[^.]*',
-        r'Rådg\.ing\.[^.]*',
-        r'Totalentreprenør',
-        r'Hovedentreprenør',
-        r'El-entreprenør',
-        r'Råhusproducent',
-        r'Stor Entreprise',
-        r'[A-ZÆØÅ][a-zæøå]+ Entr\.',
-    ]
+    # Strategy 1: Split by newlines (multi-line roles)
+    lines = text.split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Skip if it looks like a name, phone, or email
+        if is_valid_person_name(line):
+            continue
+        if extract_phones(line) or extract_emails(line):
+            continue
+        
+        # Split by periods and extract role-like segments
+        segments = [s.strip() for s in line.split('.') if s.strip()]
+        for segment in segments:
+            # Must have some length and look like a role
+            if 3 < len(segment) < 100:
+                # Check if it contains role keywords
+                role_indicators = [
+                    # English
+                    'contractor', 'leader', 'manager', 'engineer', 'handler',
+                    'director', 'coordinator', 'consultant', 'architect',
+                    'supervisor', 'chief', 'specialist', 'producer', 'delivery',
+                    'purchaser', 'planner', 'designer',
+                    # Danish
+                    'entreprenør', 'leder', 'chef', 'ingeniør', 'rådgiver',
+                    'projektleder', 'byggeleder', 'sagsansvarlig', 'indkøber',
+                    'producent', 'levering'
+                ]
+                
+                segment_lower = segment.lower()
+                if any(indicator in segment_lower for indicator in role_indicators):
+                    # Clean up the role
+                    role = re.sub(r'\s+', ' ', segment).strip()
+                    if role and role not in roles:
+                        roles.append(role)
     
-    for pattern in role_patterns:
-        matches = re.findall(pattern, text)
-        roles.extend(matches)
+    # Strategy 2: Look for specific patterns (if Strategy 1 didn't work)
+    if not roles:
+        # Danish role patterns
+        danish_patterns = [
+            r'Projektleder[^.]*',
+            r'Kontaktperson[^.]*',
+            r'Byggeleder[^.]*',
+            r'Sagsansvarlig[^.]*',
+            r'Projektchef[^.]*',
+            r'Projekteringsleder[^.]*',
+            r'Indkøber[^.]*',
+            r'Totalentreprenør',
+            r'Hovedentreprenør',
+            r'[A-ZÆØÅ][a-zæøå]+ Entr\.',
+        ]
+        
+        for pattern in danish_patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                role = clean_text(match)
+                if role and role not in roles:
+                    roles.append(role)
     
-    # Clean and deduplicate
-    cleaned = []
-    for role in roles:
-        role = clean_text(role)
-        if role and role not in cleaned:
-            cleaned.append(role)
-    
-    return cleaned[:5]  # Max 5 roles
+    return roles[:5]  # Max 5 roles
 
 # ============================================================================
 # Table Classification
 # ============================================================================
 
 def detect_table_type(df: pd.DataFrame) -> Tuple[str, float]:
-    """
-    Detect if table contains contacts, projects, or tenders
-    Returns: (type, confidence)
-    
-    Enhanced for new Byggefakta layouts with:
-    - Sustainability columns in projects
-    - Multiple phone numbers per contact
-    - Modernized column headers
-    """
+    """Detect if table contains contacts, projects, or tenders"""
     
     if df.empty or len(df) < 2:
         return ('unknown', 0.0)
     
-    # Get all text from table
     all_text = ' '.join(
         str(cell).lower() 
         for row in df.values 
@@ -267,14 +249,13 @@ def detect_table_type(df: pd.DataFrame) -> Tuple[str, float]:
         contact_score += 3.0
     if 'email' in all_text or 'e-mail' in all_text or 'mail' in all_text:
         contact_score += 2.0
-    if 'rolle' in all_text or 'kontaktperson' in all_text or 'projektleder' in all_text:
+    if 'rolle' in all_text or 'role' in all_text or 'kontaktperson' in all_text or 'projektleder' in all_text:
         contact_score += 2.0
     if 'firma' in all_text or 'company' in all_text:
         contact_score += 1.0
     
-    # Check if we have actual person names
     name_count = 0
-    for row in df.values[:20]:  # Sample first 20 rows
+    for row in df.values[:20]:
         for cell in row:
             if pd.notna(cell) and is_valid_person_name(str(cell)):
                 name_count += 1
@@ -284,7 +265,7 @@ def detect_table_type(df: pd.DataFrame) -> Tuple[str, float]:
     elif name_count >= 2:
         contact_score += 1.0
     
-    # Project table indicators (enhanced for new layout)
+    # Project table indicators
     project_score = 0.0
     if 'projekt' in all_text:
         project_score += 3.0
@@ -296,10 +277,8 @@ def detect_table_type(df: pd.DataFrame) -> Tuple[str, float]:
         project_score += 2.0
     if any(word in all_text for word in ['stadie', 'udførelse', 'stage']):
         project_score += 2.0
-    # NEW: Check for sustainability column (new Byggefakta feature)
     if 'bæredygtighed' in all_text or 'sustainability' in all_text:
         project_score += 2.0
-    # NEW: Check for "Seneste opdateringsdato" (last update date)
     if 'seneste' in all_text and 'opdatering' in all_text:
         project_score += 1.5
     if 'roller' in all_text and 'projekt' in all_text:
@@ -311,12 +290,11 @@ def detect_table_type(df: pd.DataFrame) -> Tuple[str, float]:
         tender_score += 5.0
     if 'licitation' in all_text:
         tender_score += 3.0
-    if all_text.count('arkiv') >= 3:  # Multiple archived tenders
+    if all_text.count('arkiv') >= 3:
         tender_score += 2.0
     if 'udbudsrolle' in all_text:
         tender_score += 2.0
     
-    # Determine type
     scores = {'contact': contact_score, 'project': project_score, 'tender': tender_score}
     max_type = max(scores, key=scores.get)
     max_score = scores[max_type]
@@ -328,14 +306,13 @@ def detect_table_type(df: pd.DataFrame) -> Tuple[str, float]:
     return (max_type, confidence)
 
 # ============================================================================
-# Contact Extraction
+# Contact Extraction (IMPROVED)
 # ============================================================================
 
 def find_column_indices(df: pd.DataFrame, keywords: List[str]) -> List[int]:
-    """Find column indices that contain any of the keywords"""
+    """FIXED: Find column indices with case-insensitive matching"""
     indices = []
     
-    # Check first few rows for headers
     for col_idx in range(len(df.columns)):
         col_text = ' '.join(
             str(df.iloc[i, col_idx]).lower() 
@@ -343,28 +320,23 @@ def find_column_indices(df: pd.DataFrame, keywords: List[str]) -> List[int]:
             if pd.notna(df.iloc[i, col_idx])
         )
         
-        if any(kw in col_text for kw in keywords):
+        # Case-insensitive matching
+        if any(kw.lower() in col_text for kw in keywords):
             indices.append(col_idx)
+            logger.info(f"Found column {col_idx} for keywords {keywords}")
     
     return indices
 
 def detect_id_column(df: pd.DataFrame) -> Optional[int]:
-    """
-    Detect if table has a number/ID column (NEW Byggefakta feature: "#" column)
-    
-    Returns column index if found, None otherwise.
-    """
-    for col_idx in range(min(3, len(df.columns))):  # Check first 3 columns
-        # Check first 10 rows for numeric sequence pattern
+    """Detect if table has a number/ID column"""
+    for col_idx in range(min(3, len(df.columns))):
         numbers = []
         for i in range(min(10, len(df))):
             cell = str(df.iloc[i, col_idx]).strip()
-            if cell.isdigit() and len(cell) <= 3:  # IDs typically 1-3 digits
+            if cell.isdigit() and len(cell) <= 3:
                 numbers.append(int(cell))
         
-        # If we found 3+ sequential-ish numbers, likely an ID column
         if len(numbers) >= 3:
-            # Check if mostly sequential (allows some gaps)
             sorted_nums = sorted(numbers)
             if sorted_nums[-1] - sorted_nums[0] <= len(numbers) * 2:
                 logger.info(f"Detected ID column (#) at index {col_idx}")
@@ -373,24 +345,10 @@ def detect_id_column(df: pd.DataFrame) -> Optional[int]:
     return None
 
 def merge_multirow_entries(df: pd.DataFrame, boundary_cols: List[int]) -> pd.DataFrame:
-    """
-    UNIVERSAL: Merge multi-row entries (contacts, projects, etc.) into single rows.
-    
-    Many PDFs split entries across multiple rows. This function detects and merges them.
-    Enhanced to work with NEW Byggefakta format that has numbered ID columns.
-    
-    Args:
-        df: DataFrame to process
-        boundary_cols: Columns to check for entry boundaries (ID, name, etc.)
-    
-    Strategy:
-    1. If ID column exists: Use numbers as entry boundaries (most reliable - NEW format)
-    2. Otherwise: Use presence of text in boundary columns (legacy format)
-    """
+    """Merge multi-row entries into single rows"""
     if df.empty or not boundary_cols:
         return df
     
-    # Detect ID column (NEW Byggefakta feature)
     id_col = detect_id_column(df)
     primary_col = boundary_cols[0]
     
@@ -400,80 +358,60 @@ def merge_multirow_entries(df: pd.DataFrame, boundary_cols: List[int]) -> pd.Dat
     for idx in range(len(df)):
         row = df.iloc[idx]
         
-        # Check if this row starts a new entry
         is_new_entry = False
         
         if id_col is not None:
-            # NEW FORMAT: Use ID column as delimiter (most reliable)
             cell_val = str(row.iloc[id_col]).strip()
             if cell_val.isdigit():
                 is_new_entry = True
-                logger.debug(f"Row {idx}: New entry detected via ID column (#{cell_val})")
         else:
-            # LEGACY FORMAT: Use primary column presence
             cell = str(row.iloc[primary_col]) if primary_col < len(row) else ""
             is_new_entry = cell.strip() and cell not in ['', 'nan', 'None']
         
         if is_new_entry:
-            # Save previous entry
             if current_entry is not None:
                 merged_rows.append(current_entry)
-            # Start new entry
             current_entry = row.copy()
         else:
-            # Continuation of previous entry - merge cells
             if current_entry is not None:
                 for col_idx in range(len(row)):
                     cell_value = str(row.iloc[col_idx]).strip()
                     if cell_value and cell_value not in ['', 'nan', 'None']:
-                        # Append to current entry's cell with newline separator
                         existing = str(current_entry.iloc[col_idx]).strip()
                         if not existing or existing in ['', 'nan', 'None']:
                             current_entry.iloc[col_idx] = cell_value
                         else:
                             current_entry.iloc[col_idx] = existing + '\n' + cell_value
     
-    # Don't forget last entry
     if current_entry is not None:
         merged_rows.append(current_entry)
     
     if merged_rows:
         merged_df = pd.DataFrame(merged_rows)
-        id_detected = id_col is not None
-        logger.info(f"Merged {len(df)} rows into {len(merged_df)} entries (ID column: {id_detected})")
+        logger.info(f"Merged {len(df)} rows into {len(merged_df)} entries")
         return merged_df
     
     return df
 
-def merge_multirow_contacts(df: pd.DataFrame, name_cols: List[int]) -> pd.DataFrame:
-    """
-    UNIVERSAL: Merge multi-row contact entries.
-    Wrapper around merge_multirow_entries for backward compatibility.
-    """
-    return merge_multirow_entries(df, name_cols)
-
 def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
     """
-    Extract contacts with names, phones, emails, and roles
-    Enhanced for NEW Byggefakta format with:
-    - Multiple phone numbers per contact (mobile + office)
-    - ID column (#)
-    - Compact single-line format
+    IMPROVED: Extract contacts with better role extraction
     """
     
     contacts = []
     
     logger.info(f"Extracting contacts from table with shape {df.shape}")
     
-    # Find relevant columns
+    # Find relevant columns (case-insensitive now)
     name_cols = find_column_indices(df, ['navn', 'name'])
-    phone_cols = find_column_indices(df, ['telefon', 'phone', 'mobil'])
+    phone_cols = find_column_indices(df, ['telefon', 'phone', 'mobil', 'phones'])
     email_cols = find_column_indices(df, ['email', 'e-mail', 'mail'])
-    role_cols = find_column_indices(df, ['rolle', 'position', 'titel'])
+    role_cols = find_column_indices(df, ['rolle', 'role', 'position', 'titel', 'title'])
+    
+    logger.info(f"Column indices - names: {name_cols}, phones: {phone_cols}, emails: {email_cols}, roles: {role_cols}")
     
     # If no explicit columns found, try to infer
     if not name_cols:
-        # Look for column with most person names
         name_counts = []
         for col_idx in range(len(df.columns)):
             count = sum(
@@ -487,25 +425,25 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
             best_col, best_count = max(name_counts, key=lambda x: x[1])
             if best_count >= 3:
                 name_cols = [best_col]
+                logger.info(f"Inferred name column: {best_col}")
     
     if not name_cols:
         logger.warning("No name column found in contact table")
         return []
     
-    logger.info(f"Column indices - names: {name_cols}, phones: {phone_cols}, emails: {email_cols}, roles: {role_cols}")
+    # Merge multi-row contacts
+    df = merge_multirow_entries(df, name_cols)
     
-    # UNIVERSAL FIX: Merge multi-row contacts before processing
-    df = merge_multirow_contacts(df, name_cols)
-    
-    # Detect ID column for extraction (NEW Byggefakta feature)
+    # Detect ID column
     id_col = detect_id_column(df)
     
     # Skip header rows
     start_row = 0
     for i in range(min(10, len(df))):
         row_text = ' '.join(str(cell).lower() for cell in df.iloc[i] if pd.notna(cell))
-        if any(kw in row_text for kw in ['navn', 'name', 'firma', 'telefon', 'rolle']):
+        if any(kw in row_text for kw in ['navn', 'name', 'firma', 'telefon', 'rolle', 'role']):
             start_row = i + 1
+            logger.info(f"Skipping header rows, starting at row {start_row}")
     
     # Extract contacts
     for idx in range(start_row, len(df)):
@@ -513,7 +451,7 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
         
         contact = {}
         
-        # Extract ID/number if column exists (NEW format)
+        # Extract ID
         if id_col is not None and id_col < len(row):
             contact_id = str(row.iloc[id_col]).strip()
             if contact_id.isdigit():
@@ -530,7 +468,7 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
         if 'name' not in contact:
             continue
         
-        # Extract phone - NEW: collect ALL phones (mobile + office)
+        # Extract phones (collect ALL)
         all_phones = []
         for col_idx in phone_cols + list(range(len(row))):
             if col_idx < len(row) and pd.notna(row.iloc[col_idx]):
@@ -538,7 +476,6 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
                 if phones:
                     all_phones.extend(phones)
         
-        # Remove duplicates while preserving order
         if all_phones:
             seen = set()
             unique_phones = []
@@ -547,14 +484,13 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
                     seen.add(phone)
                     unique_phones.append(phone)
             
-            # Store all phones (NEW format supports multiple)
             if len(unique_phones) == 1:
                 contact['phone'] = unique_phones[0]
             else:
                 contact['phones'] = unique_phones
-                contact['phone'] = unique_phones[0]  # Primary phone for compatibility
+                contact['phone'] = unique_phones[0]
         
-        # Extract email - collect ALL emails
+        # Extract emails
         all_emails = []
         for col_idx in email_cols + list(range(len(row))):
             if col_idx < len(row) and pd.notna(row.iloc[col_idx]):
@@ -562,31 +498,48 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
                 if emails:
                     all_emails.extend(emails)
         
-        # Remove duplicates
         if all_emails:
             unique_emails = list(dict.fromkeys(all_emails))
             if len(unique_emails) == 1:
                 contact['email'] = unique_emails[0]
             else:
                 contact['emails'] = unique_emails
-                contact['email'] = unique_emails[0]  # Primary email for compatibility
+                contact['email'] = unique_emails[0]
         
-        # Extract roles - check role columns and all columns
+        # IMPROVED: Extract roles
         all_roles = []
-        for col_idx in role_cols + list(range(len(row))):
-            if col_idx < len(row) and col_idx not in name_cols:
-                cell_text = str(row.iloc[col_idx])
-                if pd.notna(row.iloc[col_idx]):
-                    roles = extract_roles(cell_text)
+        
+        # Strategy 1: If we found role columns, extract from those first
+        if role_cols:
+            for col_idx in role_cols:
+                if col_idx < len(row) and pd.notna(row.iloc[col_idx]):
+                    cell_text = str(row.iloc[col_idx])
+                    # Direct extraction from role column
+                    roles = extract_roles_from_text(cell_text)
                     all_roles.extend(roles)
+                    logger.debug(f"Extracted roles from column {col_idx}: {roles}")
+        
+        # Strategy 2: Check all other columns (except name columns) for role-like text
+        if not all_roles:
+            for col_idx in range(len(row)):
+                if col_idx not in name_cols and col_idx not in phone_cols and pd.notna(row.iloc[col_idx]):
+                    cell_text = str(row.iloc[col_idx])
+                    roles = extract_roles_from_text(cell_text)
+                    if roles:
+                        all_roles.extend(roles)
+                        logger.debug(f"Extracted roles from column {col_idx}: {roles}")
         
         if all_roles:
-            contact['roles'] = list(dict.fromkeys(all_roles))[:3]  # Max 3 roles
+            # Remove duplicates and limit to 5
+            unique_roles = list(dict.fromkeys(all_roles))[:5]
+            contact['roles'] = unique_roles
+            logger.debug(f"Contact {contact['name']} has roles: {unique_roles}")
         
-        # UNIVERSAL: Include contact if has name + (phone OR email OR role)
-        # Many PDFs have contacts with roles but no direct phone/email
+        # Include contact if has name + (phone OR email OR role)
         if 'phone' in contact or 'email' in contact or 'roles' in contact:
             contacts.append(contact)
+        else:
+            logger.debug(f"Skipping contact {contact.get('name')} - no phone/email/role")
     
     # Deduplicate
     seen = set()
@@ -598,6 +551,11 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
             unique.append(contact)
     
     logger.info(f"Extracted {len(unique)} unique contacts")
+    
+    # Log role extraction statistics
+    contacts_with_roles = sum(1 for c in unique if 'roles' in c)
+    logger.info(f"Contacts with roles: {contacts_with_roles}/{len(unique)}")
+    
     return unique
 
 # ============================================================================
@@ -611,7 +569,6 @@ def extract_budget(text: str) -> Optional[str]:
     
     text = clean_multiline(text)
     
-    # Look for patterns like "155 mio", "3,4 mia", "900 mio. kr"
     patterns = [
         r'(\d+(?:[,.]\d+)?\s*(?:mia|mio)\.?\s*(?:kr)?)',
         r'(\d+(?:[,.]\d+)?\s*billion)',
@@ -626,34 +583,27 @@ def extract_budget(text: str) -> Optional[str]:
     return None
 
 def extract_date(text: str) -> Optional[str]:
-    """
-    Extract date from text
-    Enhanced for NEW Byggefakta format date patterns
-    """
+    """Extract date from text"""
     if not text or pd.isna(text):
         return None
     
     text = clean_multiline(text)
     
-    # Danish month patterns (e.g., "Juni 2024", "Maj 2025")
     month_pattern = r'(jan|feb|mar|apr|maj|jun|jul|aug|sep|okt|nov|dec)[a-z]*\.?\s+\d{4}'
     match = re.search(month_pattern, text, re.IGNORECASE)
     if match:
         return clean_text(match.group(0))
     
-    # Date with day (e.g., "07 nov. 2025", "23 sep. 2025")
     day_month_year = r'\d{1,2}\s+(?:jan|feb|mar|apr|maj|jun|jul|aug|sep|okt|nov|dec)[a-z]*\.?\s+\d{4}'
     match = re.search(day_month_year, text, re.IGNORECASE)
     if match:
         return clean_text(match.group(0))
     
-    # Numeric date pattern
     date_pattern = r'\d{1,2}[-./]\d{1,2}[-./]\d{4}'
     match = re.search(date_pattern, text)
     if match:
         return clean_text(match.group(0))
     
-    # Year only
     year_pattern = r'\b(20\d{2})\b'
     match = re.search(year_pattern, text)
     if match:
@@ -686,7 +636,10 @@ def extract_stage(text: str) -> Optional[str]:
         'Projekteringsproces',
         'Planlægningsproces',
         'Afsluttet',
-        'Skitseprojekt'
+        'Skitseprojekt',
+        'Construction',
+        'Procurement',
+        'Projecting'
     ]
     
     text_clean = clean_multiline(text)
@@ -698,14 +651,7 @@ def extract_stage(text: str) -> Optional[str]:
     return None
 
 def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
-    """
-    Extract projects with all details
-    Enhanced for NEW Byggefakta format with:
-    - Sustainability (Bæredygtighed) column
-    - Last update date (Seneste opdateringsdato)
-    - ID column (#)
-    - Roller column
-    """
+    """Extract projects with all details"""
     
     projects = []
     
@@ -718,28 +664,22 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if any(kw in row_text for kw in ['projekt', 'budget', 'region', 'rolle', 'byggestart']):
             start_row = i + 1
     
-    # Extract data portion (skip headers)
     df_data = df.iloc[start_row:].copy() if start_row < len(df) else df.copy()
     df_data = df_data.reset_index(drop=True)
     
-    # UNIVERSAL FIX: Merge multi-row projects before processing
-    # Use first column as boundary (usually project name or ID)
+    # Merge multi-row projects
     df_data = merge_multirow_entries(df_data, [0])
     
-    # Detect ID column for extraction (NEW Byggefakta feature)
     id_col = detect_id_column(df_data)
     
-    # Process each merged row
     for idx in range(len(df_data)):
         row = df_data.iloc[idx]
         
         project = {}
         
-        # Extract ID/number if column exists (NEW format)
+        # Extract ID
         if id_col is not None and id_col < len(row):
-            project_id = str(row.iloc[id_col]).strip()
-            # Clean up any newlines from merging
-            project_id = project_id.split('\n')[0].strip()
+            project_id = str(row.iloc[id_col]).strip().split('\n')[0].strip()
             if project_id.isdigit():
                 project['id'] = project_id
         
@@ -749,19 +689,16 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if not cells:
             continue
         
-        # Extract project name - usually the first or longest text field
+        # Extract project name
         project_name = None
         for cell in cells:
-            # Filter out pure metadata
             if len(cell) > 15 and not re.match(r'^\d+\s+(mio|mia)', cell.lower()):
-                # Check if it's not just a role or region
                 if not any(word in cell.lower() for word in ['hovedstaden', 'sjælland', 'entr.', 'totalentreprenør']):
-                    if not re.match(r'^\d{1,2}\s+\w+\.?\s+\d{4}', cell):  # Not a date
+                    if not re.match(r'^\d{1,2}\s+\w+\.?\s+\d{4}', cell):
                         project_name = cell
                         break
         
         if not project_name:
-            # Try first cell that's not empty
             for cell in cells:
                 if len(cell) > 10:
                     project_name = cell
@@ -770,16 +707,14 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if not project_name:
             continue
         
-        # Clean project name - replace newlines with spaces (from multi-row merging)
+        # Clean project name
         project_name = re.sub(r'\s*\n\s*', ' ', project_name)
         project_name = re.sub(r'\s+', ' ', project_name).strip()
-        
-        # UNIVERSAL: Fix camelCase boundaries (colored text segments in PDFs)
         project_name = fix_camelcase_boundaries(project_name)
         
         project['name'] = project_name
         
-        # Extract other fields from all cells
+        # Extract other fields
         all_text = ' '.join(cells)
         
         budget = extract_budget(all_text)
@@ -798,12 +733,10 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if stage:
             project['stage'] = stage
         
-        # Extract last updated date (NEW: Seneste opdateringsdato)
+        # Extract last updated date
         update_date = None
         for cell in cells:
-            # Skip cells that look like start dates
             if 'byggestart' not in cell.lower():
-                # Try to find a date (format: "07 nov. 2025")
                 date_match = re.search(
                     r'\d{1,2}\s+(?:jan|feb|mar|apr|maj|jun|jul|aug|sep|okt|nov|dec)[a-z]*\.?\s+\d{4}',
                     cell,
@@ -816,21 +749,19 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if update_date:
             project['last_updated'] = update_date
         
-        # Extract roles (like Hovedentreprenør, Totalentreprenør, Murer Entr., Facade Entr.)
-        roles = extract_roles(all_text)
+        # Extract roles using improved function
+        roles = extract_roles_from_text(all_text)
         if roles:
-            project['roles'] = roles[:2]  # Max 2 roles
+            project['roles'] = roles[:2]
         
-        # NEW: Check for sustainability indicator (Bæredygtighed column)
-        # In new format, this might be an icon or checkmark
+        # Check for sustainability
         if '✓' in all_text or 'bæredygtighed' in all_text.lower():
             project['sustainability'] = True
         
-        # Only add if we have meaningful data
-        if len(project) >= 2:  # At least name + one other field
+        if len(project) >= 2:
             projects.append(project)
     
-    # Deduplicate based on name
+    # Deduplicate
     seen = set()
     unique = []
     for project in projects:
@@ -847,23 +778,18 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
 # ============================================================================
 
 def extract_tenders_from_table(df: pd.DataFrame) -> List[Dict]:
-    """
-    Extract tender/bid information
-    Enhanced for NEW Byggefakta format
-    """
+    """Extract tender/bid information"""
     
     tenders = []
     
     logger.info(f"Extracting tenders from table with shape {df.shape}")
     
-    # Skip header rows
     start_row = 0
     for i in range(min(5, len(df))):
         row_text = ' '.join(str(cell).lower() for cell in df.iloc[i] if pd.notna(cell))
         if 'udbud' in row_text or 'licitation' in row_text:
             start_row = i + 1
     
-    # Process rows
     for idx in range(start_row, len(df)):
         row = df.iloc[idx]
         
@@ -883,9 +809,9 @@ def extract_tenders_from_table(df: pd.DataFrame) -> List[Dict]:
         if 'name' not in tender and cells:
             tender['name'] = cells[0]
         
-        # Extract trade/type (VVS Entr., El-entreprenør, etc.)
+        # Extract trade/type using improved function
         all_text = ' '.join(cells)
-        roles = extract_roles(all_text)
+        roles = extract_roles_from_text(all_text)
         if roles:
             tender['trade'] = roles[0]
         
@@ -894,7 +820,7 @@ def extract_tenders_from_table(df: pd.DataFrame) -> List[Dict]:
         if date:
             tender['date'] = date
         
-        # Mark as archived if indicated
+        # Mark as archived
         if 'arkiv' in all_text.lower():
             tender['status'] = 'Archived'
         
@@ -909,30 +835,23 @@ def extract_tenders_from_table(df: pd.DataFrame) -> List[Dict]:
 # ============================================================================
 
 def extract_tables_with_pdfplumber(pdf_path: str) -> List[Tuple[pd.DataFrame, int, str, float]]:
-    """
-    Extract tables using pdfplumber (especially good for single-page PDFs)
-    Returns: List of (dataframe, page_number, method, confidence)
-    """
+    """Extract tables using pdfplumber"""
     tables = []
     
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page_num, page in enumerate(pdf.pages, start=1):
-                # Extract tables from page
                 page_tables = page.extract_tables()
                 
                 for table in page_tables:
                     if not table or len(table) < 2:
                         continue
                     
-                    # Convert to DataFrame
                     try:
                         df = pd.DataFrame(table[1:], columns=table[0])
                     except:
-                        # Fallback: use numeric columns
                         df = pd.DataFrame(table)
                     
-                    # Clean up
                     df = df.replace('', np.nan)
                     df = df.replace(None, np.nan)
                     df = df.dropna(how='all')
@@ -953,11 +872,7 @@ def extract_tables_with_pdfplumber(pdf_path: str) -> List[Tuple[pd.DataFrame, in
 # ============================================================================
 
 def extract_from_text_fallback(pdf_path: str) -> Dict:
-    """
-    Fallback: Extract contacts and projects directly from text when table detection fails.
-    CRITICAL for single-page PDFs where Camelot might miss tables.
-    Enhanced for NEW Byggefakta format.
-    """
+    """Fallback: Extract contacts and projects from text"""
     contacts = []
     projects = []
     
@@ -966,7 +881,7 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
             for page in pdf.pages:
                 text = page.extract_text() or ""
                 
-                # Extract contacts from text
+                # Extract contacts
                 if 'KONTAKTER' in text or 'CONTACTS' in text or 'Kontakter' in text:
                     lines = text.split('\n')
                     in_contact_section = False
@@ -979,88 +894,59 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                             in_contact_section = True
                             continue
                         
-                        # Stop at next section
                         if in_contact_section and any(header in line for header in ['PROJEKTER', 'PROJECTS', 'Projekter', 'OPLYSNINGER', 'Hubexo', 'UDBUD', 'Udbud']):
                             if current_contact:
                                 contacts.append(current_contact)
                             break
                         
                         if in_contact_section:
-                            # Skip header row
                             if 'Navn' in line and 'Telefon' in line:
                                 continue
                             
-                            # NEW FORMAT: Single-line with ID - "1 Allan Coops Ac Tone Byg ApS 33044550 Projektleder..."
-                            # Look for lines with phone numbers (indicates contact data)
                             phones_in_line = extract_phones(line)
                             if phones_in_line:
-                                # Extract name from the line
                                 words = line_clean.split()
-                                
-                                # Find person name (2-4 consecutive capitalized words)
-                                company_keywords = ['alpha', 'beta', 'gamma', 'delta', 'omega', 
-                                                   'tømrer', 'entreprise', 'snedker', 'murer', 'vvs',
-                                                   'holding', 'group', 'gruppen', 'services', 'a/s', 'aps']
                                 
                                 name_candidates = []
                                 for j in range(len(words) - 1):
-                                    # Try 2-word names
                                     if j < len(words) - 1:
                                         two_word = ' '.join(words[j:j+2])
-                                        if (is_valid_person_name(two_word) and 
-                                            words[j+1].lower() not in company_keywords):
+                                        if is_valid_person_name(two_word):
                                             name_candidates.append(two_word)
                                     
-                                    # Try 3-word names
                                     if j < len(words) - 2:
                                         three_word = ' '.join(words[j:j+3])
-                                        if (is_valid_person_name(three_word) and 
-                                            words[j+2].lower() not in company_keywords):
+                                        if is_valid_person_name(three_word):
                                             name_candidates.append(three_word)
-                                    
-                                    # Try 4-word names
-                                    if j < len(words) - 3:
-                                        four_word = ' '.join(words[j:j+4])
-                                        if (is_valid_person_name(four_word) and 
-                                            words[j+3].lower() not in company_keywords):
-                                            name_candidates.append(four_word)
                                 
-                                # Pick the longest valid name found
                                 if name_candidates:
-                                    # Save previous contact
                                     if current_contact:
                                         contacts.append(current_contact)
                                     
-                                    # Start new contact with longest name
                                     best_name = max(name_candidates, key=len)
                                     current_contact = {'name': best_name}
                                     
-                                    # NEW: Store all phones (can be multiple)
                                     if len(phones_in_line) == 1:
                                         current_contact['phone'] = phones_in_line[0]
                                     else:
                                         current_contact['phones'] = phones_in_line
                                         current_contact['phone'] = phones_in_line[0]
                                     
-                                    # Extract email
                                     emails = extract_emails(line)
                                     if emails:
                                         current_contact['email'] = emails[0]
                                     
-                                    # Extract roles from this line
-                                    roles = extract_roles(line)
+                                    # IMPROVED: Use new role extraction
+                                    roles = extract_roles_from_text(line)
                                     if roles:
                                         current_contact['roles'] = roles
                             
-                            # LEGACY FORMAT: Name on one line, data on next lines
                             elif is_valid_person_name(line_clean):
-                                # Save previous contact
                                 if current_contact:
                                     contacts.append(current_contact)
                                 
                                 current_contact = {'name': line_clean}
                             
-                            # Additional data for current contact (multi-line format)
                             elif current_contact:
                                 phones = extract_phones(line)
                                 if phones and 'phone' not in current_contact:
@@ -1074,17 +960,17 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                                 if emails and 'email' not in current_contact:
                                     current_contact['email'] = emails[0]
                                 
-                                roles = extract_roles(line)
+                                # IMPROVED: Use new role extraction
+                                roles = extract_roles_from_text(line)
                                 if roles:
                                     if 'roles' not in current_contact:
                                         current_contact['roles'] = []
                                     current_contact['roles'].extend(roles)
                     
-                    # Don't forget last contact
                     if current_contact:
                         contacts.append(current_contact)
                 
-                # Extract projects from text
+                # Extract projects
                 if 'PROJEKTER' in text or 'PROJECTS' in text or 'Projekter' in text:
                     lines = text.split('\n')
                     in_project_section = False
@@ -1098,14 +984,11 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                             break
                         
                         if in_project_section:
-                            # Look for project-like lines (has budget or specific keywords)
                             if extract_budget(line) or any(kw in line.lower() for kw in ['opførelse', 'renovering', 'ombygning', 'etablering']):
-                                # Fix camelCase boundaries
                                 line_fixed = fix_camelcase_boundaries(line)
                                 
                                 project = {}
                                 
-                                # Extract project name (first substantial text before metadata)
                                 parts = line_fixed.split()
                                 name_parts = []
                                 for part in parts:
@@ -1114,11 +997,11 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                                         len(part) > 2):
                                         name_parts.append(part)
                                     else:
-                                        if name_parts:  # Stop at first metadata
+                                        if name_parts:
                                             break
                                 
                                 if name_parts:
-                                    project['name'] = ' '.join(name_parts[:15])  # Max 15 words
+                                    project['name'] = ' '.join(name_parts[:15])
                                     
                                     budget = extract_budget(line)
                                     if budget:
@@ -1136,7 +1019,8 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                                     if stage:
                                         project['stage'] = stage
                                     
-                                    roles = extract_roles(line)
+                                    # IMPROVED: Use new role extraction
+                                    roles = extract_roles_from_text(line)
                                     if roles:
                                         project['roles'] = roles[:2]
                                     
@@ -1156,30 +1040,17 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
 
 def parse_pdf(pdf_path: str) -> Dict:
     """
-    Enhanced PDF parsing with multiple extraction methods for maximum robustness.
-    Handles BOTH legacy and NEW Byggefakta formats.
-    
-    NEW FORMAT FEATURES:
-    - ID columns (#) for contacts and projects
-    - Multiple phone numbers per contact
-    - Sustainability columns
-    - Last update dates
-    
-    Strategy:
-    1. Camelot (lattice + stream) - best for structured tables
-    2. pdfplumber - good for single-page and complex layouts
-    3. Text fallback - last resort for when table detection fails
+    Enhanced PDF parsing with improved role extraction
     """
     
     logger.info(f"Parsing PDF: {pdf_path}")
     
-    # Extract company info
     company_info = extract_company_info(pdf_path)
     
-    # Extract all tables with multiple methods
+    # Extract all tables
     all_tables = []
     
-    # Method 1: Camelot Lattice (bordered tables)
+    # Camelot Lattice
     try:
         logger.info("Extracting tables with Camelot lattice...")
         tables = camelot.read_pdf(pdf_path, pages='all', flavor='lattice', strip_text='\n')
@@ -1195,15 +1066,15 @@ def parse_pdf(pdf_path: str) -> Dict:
     except Exception as e:
         logger.warning(f"Camelot lattice failed: {e}")
     
-    # Method 2: Camelot Stream (borderless tables) - try multiple configurations
+    # Camelot Stream
     try:
         logger.info("Extracting tables with Camelot stream...")
         
         stream_configs = [
-            {},                                                     # Default
-            {'edge_tol': 50, 'row_tol': 10, 'column_tol': 5},   # Tighter
-            {'edge_tol': 100, 'row_tol': 15, 'column_tol': 10}, # Moderate
-            {'edge_tol': 200, 'row_tol': 20, 'column_tol': 15}, # Looser
+            {},
+            {'edge_tol': 50, 'row_tol': 10, 'column_tol': 5},
+            {'edge_tol': 100, 'row_tol': 15, 'column_tol': 10},
+            {'edge_tol': 200, 'row_tol': 20, 'column_tol': 15},
         ]
         
         best_tables = []
@@ -1218,7 +1089,6 @@ def parse_pdf(pdf_path: str) -> Dict:
                     **config
                 )
                 
-                # Score based on: number of tables + average columns + accuracy
                 score = len(tables)
                 if tables:
                     avg_cols = sum(t.df.shape[1] for t in tables) / len(tables)
@@ -1237,7 +1107,6 @@ def parse_pdf(pdf_path: str) -> Dict:
         tables = best_tables
         for table in tables:
             if not table.df.empty and table.df.shape[0] > 2:
-                # Check for duplicates
                 is_dup = False
                 for existing_df, _, _, _ in all_tables:
                     if existing_df.shape == table.df.shape:
@@ -1252,44 +1121,41 @@ def parse_pdf(pdf_path: str) -> Dict:
                         'stream',
                         table.parsing_report.get('accuracy', 0)
                     ))
-        logger.info(f"Found {len(tables)} stream tables (after dedup)")
+        logger.info(f"Found {len(tables)} stream tables")
     except Exception as e:
         logger.warning(f"Camelot stream failed: {e}")
     
-    # Method 3: pdfplumber (especially good for single-page PDFs and NEW format)
+    # pdfplumber
     try:
         pdfplumber_tables = extract_tables_with_pdfplumber(pdf_path)
         
         for df, page, method, confidence in pdfplumber_tables:
-            # Check for duplicates
             is_dup = False
             for existing_df, _, _, _ in all_tables:
                 if existing_df.shape == df.shape:
-                    # Simple content similarity check
                     try:
                         if np.array_equal(existing_df.values, df.values):
                             is_dup = True
                             break
                     except:
-                        pass  # Different dtypes, not a duplicate
+                        pass
             
             if not is_dup:
                 all_tables.append((df, page, method, confidence))
         
-        logger.info(f"Added {len(pdfplumber_tables)} pdfplumber tables (after dedup)")
+        logger.info(f"Added {len(pdfplumber_tables)} pdfplumber tables")
     except Exception as e:
         logger.warning(f"pdfplumber table extraction failed: {e}")
     
     logger.info(f"Total tables to process: {len(all_tables)}")
     
-    # Process and classify tables
+    # Process tables
     contacts = []
     projects = []
     tenders = []
     quality_scores = []
     
     for df, page, method, accuracy in all_tables:
-        # Detect table type
         table_type, confidence = detect_table_type(df)
         
         logger.info(
@@ -1302,7 +1168,6 @@ def parse_pdf(pdf_path: str) -> Dict:
         
         quality_scores.append(confidence)
         
-        # Extract data based on type
         if table_type == 'contact':
             new_contacts = extract_contacts_from_table(df)
             contacts.extend(new_contacts)
@@ -1315,8 +1180,7 @@ def parse_pdf(pdf_path: str) -> Dict:
             new_tenders = extract_tenders_from_table(df)
             tenders.extend(new_tenders)
     
-    # Method 4: Text fallback if we got insufficient results
-    # This is CRITICAL for single-page PDFs where table detection might fail
+    # Text fallback
     if len(contacts) < 1 or len(projects) < 2:
         logger.info("Low extraction results - trying text fallback...")
         fallback = extract_from_text_fallback(pdf_path)
@@ -1329,22 +1193,29 @@ def parse_pdf(pdf_path: str) -> Dict:
             logger.info(f"Text fallback found {len(fallback['projects'])} additional projects")
             projects.extend(fallback['projects'])
     
-    # Final deduplication
+    # Deduplicate
     contacts = deduplicate_contacts(contacts)
     projects = deduplicate_projects(projects)
     
-    # Calculate quality metrics
+    # Quality metrics
     avg_confidence = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
     
-    # Add extraction method info
     methods_used = list(set([method for _, _, method, _ in all_tables]))
     if len(contacts) > 0 or len(projects) > 0:
-        if not quality_scores:  # Results came from text fallback
+        if not quality_scores:
             methods_used.append('text-fallback')
     
     logger.info(
         f"Final results: {len(contacts)} contacts, "
         f"{len(projects)} projects, {len(tenders)} tenders"
+    )
+    
+    # Log role extraction success
+    contacts_with_roles = sum(1 for c in contacts if 'roles' in c and c['roles'])
+    projects_with_roles = sum(1 for p in projects if 'roles' in p and p['roles'])
+    logger.info(
+        f"Roles extracted: {contacts_with_roles}/{len(contacts)} contacts, "
+        f"{projects_with_roles}/{len(projects)} projects"
     )
     
     return {
@@ -1374,7 +1245,6 @@ def deduplicate_contacts(contacts: List[Dict]) -> List[Dict]:
     unique = []
     
     for contact in contacts:
-        # Create key from name and phone/email
         key_parts = [contact.get('name', '')]
         if contact.get('phone'):
             key_parts.append(contact['phone'])
@@ -1396,8 +1266,6 @@ def deduplicate_projects(projects: List[Dict]) -> List[Dict]:
     
     for project in projects:
         name = project.get('name', '').lower()
-        
-        # Create a normalized key
         key = re.sub(r'\s+', ' ', name).strip()
         
         if key and key not in seen:
@@ -1411,10 +1279,7 @@ def deduplicate_projects(projects: List[Dict]) -> List[Dict]:
 # ============================================================================
 
 def extract_company_info(pdf_path: str) -> Dict[str, str]:
-    """
-    Extract company information from first page
-    Enhanced for NEW Byggefakta format
-    """
+    """Extract company information from first page"""
     
     info = {}
     
@@ -1423,47 +1288,39 @@ def extract_company_info(pdf_path: str) -> Dict[str, str]:
             if len(pdf.pages) == 0:
                 return info
             
-            # Extract text from first page
             text = pdf.pages[0].extract_text() or ""
-            lines = text.split('\n')[:40]  # First 40 lines
+            lines = text.split('\n')[:40]
             
             for line in lines:
                 line = line.strip()
                 
-                # CVR/Org number (must be 8 digits and labeled)
                 if 'cvr' in line.lower() or 'org nr' in line.lower() or 'org. nr' in line.lower():
                     match = re.search(r'\b(\d{8})\b', line)
                     if match:
                         info['cvr'] = match.group(1)
                 
-                # ID Nr (NEW Byggefakta field)
                 if 'id nr' in line.lower():
                     match = re.search(r'\b(\d+)\b', line)
                     if match:
                         info['id_nr'] = match.group(1)
                 
-                # Email
                 if 'email' not in info:
                     emails = extract_emails(line)
                     if emails:
                         info['email'] = emails[0]
                 
-                # Website
                 if 'http' in line.lower():
                     match = re.search(r'(https?://[^\s]+)', line)
                     if match:
                         info['website'] = match.group(1)
                 
-                # Phone (NOT from CVR/Org line, must be labeled)
                 if 'phone' not in info:
                     if any(word in line.lower() for word in ['telefon', 'phone', 'tlf', 'mobil']):
-                        # Don't extract from CVR/Org line
                         if 'cvr' not in line.lower() and 'org nr' not in line.lower():
                             phones = extract_phones(line)
                             if phones:
                                 info['phone'] = phones[0]
                 
-                # Company name (look for A/S, ApS, IVS suffixes)
                 if 'name' not in info:
                     if any(suffix in line for suffix in [' A/S', ' ApS', ' A.S', ' IVS', ' I/S']):
                         if len(line) < 80 and not line.isupper():
