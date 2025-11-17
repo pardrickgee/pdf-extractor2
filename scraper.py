@@ -2,10 +2,12 @@
 Enhanced Professional PDF Scraper for Byggefakta (New & Old Layouts)
 =====================================================================
 FIXED VERSION with improved role extraction for English and Danish roles
+- Separates "Project leader" roles from "Handled" roles
+- Filters out uninteresting roles like "Purchasers"
 
 Key improvements:
 - Case-insensitive column detection
-- Better role extraction for both English and Danish
+- Two-tier role structure (project_roles vs handled_roles)
 - Direct text extraction from role columns
 - Multiple role parsing strategies
 """
@@ -145,9 +147,13 @@ def extract_emails(text: str) -> List[str]:
     pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
     return list(set(pattern.findall(str(text))))
 
-def extract_roles_from_text(text: str) -> List[str]:
+def extract_roles_from_text(text: str) -> Dict[str, List[str]]:
     """
-    IMPROVED: Extract roles from text with support for English and Danish formats
+    IMPROVED: Extract and categorize roles into project roles vs handled roles
+    
+    Returns dict with:
+    - 'project_roles': Important roles (Project leader, Project manager, etc.)
+    - 'handled_roles': Support/involvement roles (Handled. [role])
     
     Handles formats like:
     - "Handled. Steel contractor"
@@ -156,73 +162,165 @@ def extract_roles_from_text(text: str) -> List[str]:
     - Multiple roles separated by newlines or periods
     """
     if not text or pd.isna(text):
-        return []
+        return {'project_roles': [], 'handled_roles': []}
     
     text = clean_multiline(text)
-    roles = []
+    project_roles = []
+    handled_roles = []
     
-    # Strategy 1: Split by newlines (multi-line roles)
+    # Skip uninteresting roles
+    uninteresting = ['purchaser', 'purchasers', 'indkøber', 'indkøbere']
+    
+    # Prefixes that indicate project roles (important)
+    project_prefixes = [
+        'project leader', 'projektleder', 'project manager', 'projektchef',
+        'project planning leader', 'production manager', 'head of project',
+        'byggeleder', 'sagsansvarlig', 'projekteringsleder'
+    ]
+    
+    # Handled prefix
+    handled_prefix = 'handled'
+    
+    # Strategy 1: Parse line by line and look for prefixes
     lines = text.split('\n')
     for line in lines:
         line = line.strip()
         if not line:
             continue
         
-        # Skip if it looks like a name, phone, or email
+        # Skip names, phones, emails
         if is_valid_person_name(line):
             continue
         if extract_phones(line) or extract_emails(line):
             continue
         
-        # Split by periods and extract role-like segments
+        line_lower = line.lower()
+        
+        # Check if line starts with a project prefix
+        is_project_role_line = any(
+            line_lower.startswith(prefix) 
+            for prefix in project_prefixes
+        )
+        
+        # Check if line starts with "Handled"
+        is_handled_line = line_lower.startswith(handled_prefix)
+        
+        # Split by periods to extract individual roles
         segments = [s.strip() for s in line.split('.') if s.strip()]
-        for segment in segments:
-            # Must have some length and look like a role
-            if 3 < len(segment) < 100:
-                # Check if it contains role keywords
-                role_indicators = [
-                    # English
-                    'contractor', 'leader', 'manager', 'engineer', 'handler',
-                    'director', 'coordinator', 'consultant', 'architect',
-                    'supervisor', 'chief', 'specialist', 'producer', 'delivery',
-                    'purchaser', 'planner', 'designer',
-                    # Danish
-                    'entreprenør', 'leder', 'chef', 'ingeniør', 'rådgiver',
-                    'projektleder', 'byggeleder', 'sagsansvarlig', 'indkøber',
-                    'producent', 'levering'
-                ]
-                
-                segment_lower = segment.lower()
-                if any(indicator in segment_lower for indicator in role_indicators):
-                    # Clean up the role
-                    role = re.sub(r'\s+', ' ', segment).strip()
-                    if role and role not in roles:
-                        roles.append(role)
+        
+        for i, segment in enumerate(segments):
+            segment_lower = segment.lower()
+            
+            # Skip the prefix itself
+            if segment_lower in project_prefixes + [handled_prefix]:
+                continue
+            
+            # Skip uninteresting roles
+            if any(unint in segment_lower for unint in uninteresting):
+                continue
+            
+            # Must look like a role
+            if not (3 < len(segment) < 100):
+                continue
+            
+            # Check if it contains role keywords
+            role_indicators = [
+                # English
+                'contractor', 'leader', 'manager', 'engineer', 
+                'director', 'coordinator', 'consultant', 'architect',
+                'supervisor', 'chief', 'specialist', 'producer', 'delivery',
+                'planner', 'designer', 'supplier',
+                # Trades/contractors (English & Danish)
+                'carpenter', 'tømrer', 'snedker',
+                'electrician', 'elektriker',
+                'plumber', 'vvs',
+                'mason', 'bricklayer', 'murer',
+                'painter', 'maler',
+                'roofer', 'tagger', 'tagdækker',
+                'blacksmith', 'smed', 'smede',
+                'glazier', 'window', 'vindue',
+                'flooring', 'gulv',
+                'facade', 'facadist',
+                'steel', 'stål',
+                'concrete', 'beton',
+                'landscape', 'anlæg',
+                'excavation', 'grave',
+                'tile', 'flise',
+                # Danish
+                'entreprenør', 'leder', 'chef', 'ingeniør', 'rådgiver',
+                'producent', 'levering', 'leverandør'
+            ]
+            
+            if not any(indicator in segment_lower for indicator in role_indicators):
+                continue
+            
+            # Clean up the role
+            role = re.sub(r'\s+', ' ', segment).strip()
+            
+            # Determine if this is a project role or handled role
+            # Check the previous segment to see if it was a prefix
+            if i > 0:
+                prev_segment = segments[i-1].lower().strip()
+                if prev_segment in project_prefixes or any(p in prev_segment for p in project_prefixes):
+                    if role and role not in project_roles:
+                        project_roles.append(role)
+                    continue
+                elif prev_segment == handled_prefix or handled_prefix in prev_segment:
+                    if role and role not in handled_roles:
+                        handled_roles.append(role)
+                    continue
+            
+            # Or check if the role line itself started with a prefix
+            if is_project_role_line:
+                if role and role not in project_roles:
+                    project_roles.append(role)
+            elif is_handled_line:
+                if role and role not in handled_roles:
+                    handled_roles.append(role)
+            else:
+                # Default: if it contains "leader" or "manager", it's a project role
+                if any(kw in segment_lower for kw in ['leader', 'leder', 'manager', 'chef', 'head']):
+                    if role and role not in project_roles:
+                        project_roles.append(role)
+                else:
+                    # Otherwise it's a handled role
+                    if role and role not in handled_roles:
+                        handled_roles.append(role)
     
-    # Strategy 2: Look for specific patterns (if Strategy 1 didn't work)
-    if not roles:
-        # Danish role patterns
-        danish_patterns = [
-            r'Projektleder[^.]*',
-            r'Kontaktperson[^.]*',
-            r'Byggeleder[^.]*',
-            r'Sagsansvarlig[^.]*',
-            r'Projektchef[^.]*',
-            r'Projekteringsleder[^.]*',
-            r'Indkøber[^.]*',
-            r'Totalentreprenør',
-            r'Hovedentreprenør',
-            r'[A-ZÆØÅ][a-zæøå]+ Entr\.',
+    # Strategy 2: Regex patterns for Danish roles (if Strategy 1 didn't work)
+    if not project_roles and not handled_roles:
+        danish_project_patterns = [
+            r'Projektleder[^.\n]*',
+            r'Byggeleder[^.\n]*',
+            r'Sagsansvarlig[^.\n]*',
+            r'Projektchef[^.\n]*',
+            r'Projekteringsleder[^.\n]*',
         ]
         
-        for pattern in danish_patterns:
+        for pattern in danish_project_patterns:
             matches = re.findall(pattern, text)
             for match in matches:
                 role = clean_text(match)
-                if role and role not in roles:
-                    roles.append(role)
+                if role and role not in project_roles:
+                    project_roles.append(role)
+        
+        danish_contractor_patterns = [
+            r'Totalentreprenør',
+            r'Hovedentreprenør',
+            r'[A-ZÆØÅ][a-zæøå]+entreprenør',
+        ]
+        
+        for pattern in danish_contractor_patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                role = clean_text(match)
+                if role and role not in handled_roles:
+                    handled_roles.append(role)
     
-    return roles[:5]  # Max 5 roles
+    return {
+        'project_roles': project_roles[:5],  # Max 5 project roles
+        'handled_roles': handled_roles[:10]  # Max 10 handled roles
+    }
 
 # ============================================================================
 # Table Classification
@@ -395,7 +493,7 @@ def merge_multirow_entries(df: pd.DataFrame, boundary_cols: List[int]) -> pd.Dat
 
 def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
     """
-    IMPROVED: Extract contacts with better role extraction
+    IMPROVED: Extract contacts with categorized role extraction
     """
     
     contacts = []
@@ -506,8 +604,9 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
                 contact['emails'] = unique_emails
                 contact['email'] = unique_emails[0]
         
-        # IMPROVED: Extract roles
-        all_roles = []
+        # IMPROVED: Extract categorized roles
+        all_project_roles = []
+        all_handled_roles = []
         
         # Strategy 1: If we found role columns, extract from those first
         if role_cols:
@@ -515,28 +614,33 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
                 if col_idx < len(row) and pd.notna(row.iloc[col_idx]):
                     cell_text = str(row.iloc[col_idx])
                     # Direct extraction from role column
-                    roles = extract_roles_from_text(cell_text)
-                    all_roles.extend(roles)
-                    logger.debug(f"Extracted roles from column {col_idx}: {roles}")
+                    roles_dict = extract_roles_from_text(cell_text)
+                    all_project_roles.extend(roles_dict['project_roles'])
+                    all_handled_roles.extend(roles_dict['handled_roles'])
+                    logger.debug(f"Extracted from column {col_idx}: {roles_dict}")
         
         # Strategy 2: Check all other columns (except name columns) for role-like text
-        if not all_roles:
+        if not all_project_roles and not all_handled_roles:
             for col_idx in range(len(row)):
                 if col_idx not in name_cols and col_idx not in phone_cols and pd.notna(row.iloc[col_idx]):
                     cell_text = str(row.iloc[col_idx])
-                    roles = extract_roles_from_text(cell_text)
-                    if roles:
-                        all_roles.extend(roles)
-                        logger.debug(f"Extracted roles from column {col_idx}: {roles}")
+                    roles_dict = extract_roles_from_text(cell_text)
+                    if roles_dict['project_roles'] or roles_dict['handled_roles']:
+                        all_project_roles.extend(roles_dict['project_roles'])
+                        all_handled_roles.extend(roles_dict['handled_roles'])
+                        logger.debug(f"Extracted from column {col_idx}: {roles_dict}")
         
-        if all_roles:
-            # Remove duplicates and limit to 5
-            unique_roles = list(dict.fromkeys(all_roles))[:5]
-            contact['roles'] = unique_roles
-            logger.debug(f"Contact {contact['name']} has roles: {unique_roles}")
+        # Remove duplicates
+        if all_project_roles:
+            contact['project_roles'] = list(dict.fromkeys(all_project_roles))[:5]
+        if all_handled_roles:
+            contact['handled_roles'] = list(dict.fromkeys(all_handled_roles))[:10]
+        
+        if contact.get('project_roles') or contact.get('handled_roles'):
+            logger.debug(f"Contact {contact['name']} - Project: {contact.get('project_roles')}, Handled: {contact.get('handled_roles')}")
         
         # Include contact if has name + (phone OR email OR role)
-        if 'phone' in contact or 'email' in contact or 'roles' in contact:
+        if 'phone' in contact or 'email' in contact or 'project_roles' in contact or 'handled_roles' in contact:
             contacts.append(contact)
         else:
             logger.debug(f"Skipping contact {contact.get('name')} - no phone/email/role")
@@ -553,8 +657,9 @@ def extract_contacts_from_table(df: pd.DataFrame) -> List[Dict]:
     logger.info(f"Extracted {len(unique)} unique contacts")
     
     # Log role extraction statistics
-    contacts_with_roles = sum(1 for c in unique if 'roles' in c)
-    logger.info(f"Contacts with roles: {contacts_with_roles}/{len(unique)}")
+    contacts_with_project = sum(1 for c in unique if 'project_roles' in c)
+    contacts_with_handled = sum(1 for c in unique if 'handled_roles' in c)
+    logger.info(f"Contacts with project roles: {contacts_with_project}/{len(unique)}, handled roles: {contacts_with_handled}/{len(unique)}")
     
     return unique
 
@@ -651,7 +756,7 @@ def extract_stage(text: str) -> Optional[str]:
     return None
 
 def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
-    """Extract projects with all details"""
+    """Extract projects with all details including categorized roles"""
     
     projects = []
     
@@ -749,10 +854,12 @@ def extract_projects_from_table(df: pd.DataFrame) -> List[Dict]:
         if update_date:
             project['last_updated'] = update_date
         
-        # Extract roles using improved function
-        roles = extract_roles_from_text(all_text)
-        if roles:
-            project['roles'] = roles[:2]
+        # Extract categorized roles
+        roles_dict = extract_roles_from_text(all_text)
+        if roles_dict['project_roles']:
+            project['project_roles'] = roles_dict['project_roles'][:3]
+        if roles_dict['handled_roles']:
+            project['handled_roles'] = roles_dict['handled_roles'][:5]
         
         # Check for sustainability
         if '✓' in all_text or 'bæredygtighed' in all_text.lower():
@@ -811,9 +918,13 @@ def extract_tenders_from_table(df: pd.DataFrame) -> List[Dict]:
         
         # Extract trade/type using improved function
         all_text = ' '.join(cells)
-        roles = extract_roles_from_text(all_text)
-        if roles:
-            tender['trade'] = roles[0]
+        roles_dict = extract_roles_from_text(all_text)
+        
+        # For tenders, we mostly care about the contractor type
+        if roles_dict['handled_roles']:
+            tender['trade'] = roles_dict['handled_roles'][0]
+        elif roles_dict['project_roles']:
+            tender['trade'] = roles_dict['project_roles'][0]
         
         # Extract dates
         date = extract_date(all_text)
@@ -936,10 +1047,12 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                                     if emails:
                                         current_contact['email'] = emails[0]
                                     
-                                    # IMPROVED: Use new role extraction
-                                    roles = extract_roles_from_text(line)
-                                    if roles:
-                                        current_contact['roles'] = roles
+                                    # IMPROVED: Use new categorized role extraction
+                                    roles_dict = extract_roles_from_text(line)
+                                    if roles_dict['project_roles']:
+                                        current_contact['project_roles'] = roles_dict['project_roles']
+                                    if roles_dict['handled_roles']:
+                                        current_contact['handled_roles'] = roles_dict['handled_roles']
                             
                             elif is_valid_person_name(line_clean):
                                 if current_contact:
@@ -960,12 +1073,16 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                                 if emails and 'email' not in current_contact:
                                     current_contact['email'] = emails[0]
                                 
-                                # IMPROVED: Use new role extraction
-                                roles = extract_roles_from_text(line)
-                                if roles:
-                                    if 'roles' not in current_contact:
-                                        current_contact['roles'] = []
-                                    current_contact['roles'].extend(roles)
+                                # IMPROVED: Use new categorized role extraction
+                                roles_dict = extract_roles_from_text(line)
+                                if roles_dict['project_roles']:
+                                    if 'project_roles' not in current_contact:
+                                        current_contact['project_roles'] = []
+                                    current_contact['project_roles'].extend(roles_dict['project_roles'])
+                                if roles_dict['handled_roles']:
+                                    if 'handled_roles' not in current_contact:
+                                        current_contact['handled_roles'] = []
+                                    current_contact['handled_roles'].extend(roles_dict['handled_roles'])
                     
                     if current_contact:
                         contacts.append(current_contact)
@@ -1019,10 +1136,12 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
                                     if stage:
                                         project['stage'] = stage
                                     
-                                    # IMPROVED: Use new role extraction
-                                    roles = extract_roles_from_text(line)
-                                    if roles:
-                                        project['roles'] = roles[:2]
+                                    # IMPROVED: Use new categorized role extraction
+                                    roles_dict = extract_roles_from_text(line)
+                                    if roles_dict['project_roles']:
+                                        project['project_roles'] = roles_dict['project_roles'][:2]
+                                    if roles_dict['handled_roles']:
+                                        project['handled_roles'] = roles_dict['handled_roles'][:3]
                                     
                                     if project.get('name'):
                                         projects.append(project)
@@ -1040,7 +1159,7 @@ def extract_from_text_fallback(pdf_path: str) -> Dict:
 
 def parse_pdf(pdf_path: str) -> Dict:
     """
-    Enhanced PDF parsing with improved role extraction
+    Enhanced PDF parsing with improved categorized role extraction
     """
     
     logger.info(f"Parsing PDF: {pdf_path}")
@@ -1211,11 +1330,14 @@ def parse_pdf(pdf_path: str) -> Dict:
     )
     
     # Log role extraction success
-    contacts_with_roles = sum(1 for c in contacts if 'roles' in c and c['roles'])
-    projects_with_roles = sum(1 for p in projects if 'roles' in p and p['roles'])
+    contacts_with_project = sum(1 for c in contacts if c.get('project_roles'))
+    contacts_with_handled = sum(1 for c in contacts if c.get('handled_roles'))
+    projects_with_project = sum(1 for p in projects if p.get('project_roles'))
+    projects_with_handled = sum(1 for p in projects if p.get('handled_roles'))
+    
     logger.info(
-        f"Roles extracted: {contacts_with_roles}/{len(contacts)} contacts, "
-        f"{projects_with_roles}/{len(projects)} projects"
+        f"Roles extracted - Contacts (project: {contacts_with_project}, handled: {contacts_with_handled}), "
+        f"Projects (project: {projects_with_project}, handled: {projects_with_handled})"
     )
     
     return {
